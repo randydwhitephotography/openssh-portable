@@ -33,18 +33,18 @@
 #include <string.h>
 #include <unistd.h>
 
-#ifdef HAVE_SYS_RANDOM_H
-# include <sys/random.h>
-#endif
-
 #ifndef HAVE_ARC4RANDOM
 
-#define MINIMUM(a, b)    (((a) < (b)) ? (a) : (b))
-
-#ifdef WITH_OPENSSL
-#include <openssl/rand.h>
-#include <openssl/err.h>
+/*
+ * If we're not using a native getentropy, use the one from bsd-getentropy.c
+ * under a different name, so that if in future these binaries are run on
+ * a system that has a native getentropy OpenSSL cannot call the wrong one.
+ */
+#ifndef HAVE_GETENTROPY
+# define getentropy(x, y) (_ssh_compat_getentropy((x), (y)))
 #endif
+
+#define MINIMUM(a, b)    (((a) < (b)) ? (a) : (b))
 
 #include "log.h"
 
@@ -83,70 +83,13 @@ _rs_init(u_char *buf, size_t n)
 	chacha_ivsetup(&rs, buf + KEYSZ);
 }
 
-#ifndef WITH_OPENSSL
-#ifdef WINDOWS
-#include <Wincrypt.h>
-static void
-getrnd(u_char *s, size_t len) {
-	HCRYPTPROV hProvider;
-	if (CryptAcquireContextW(&hProvider, 0, 0, PROV_RSA_FULL, 
-		CRYPT_VERIFYCONTEXT | CRYPT_SILENT) == FALSE ||
-	    CryptGenRandom(hProvider, len, s) == FALSE ||
-	    CryptReleaseContext(hProvider, 0) == FALSE)
-		fatal("%s Crypto error: %d", __func__, GetLastError());
-}
-
-#else /* !WINDOWS */
-# ifndef SSH_RANDOM_DEV
-#  define SSH_RANDOM_DEV "/dev/urandom"
-# endif /* SSH_RANDOM_DEV */
-static void
-getrnd(u_char *s, size_t len)
-{
-	int fd, save_errno;
-	ssize_t r;
-	size_t o = 0;
-
-#ifdef HAVE_GETRANDOM
-	if ((r = getrandom(s, len, 0)) > 0 && (size_t)r == len)
-		return;
-#endif /* HAVE_GETRANDOM */
-
-	if ((fd = open(SSH_RANDOM_DEV, O_RDONLY)) == -1) {
-		save_errno = errno;
-		/* Try egd/prngd before giving up. */
-		if (seed_from_prngd(s, len) == 0)
-			return;
-		fatal("Couldn't open %s: %s", SSH_RANDOM_DEV,
-		    strerror(save_errno));
-	}
-	while (o < len) {
-		r = read(fd, s + o, len - o);
-		if (r < 0) {
-			if (errno == EAGAIN || errno == EINTR ||
-			    errno == EWOULDBLOCK)
-				continue;
-			fatal("read %s: %s", SSH_RANDOM_DEV, strerror(errno));
-		}
-		o += r;
-	}
-	close(fd);
-}
-#endif /* !WINDOWS */
-#endif /* WITH_OPENSSL */
-
 static void
 _rs_stir(void)
 {
 	u_char rnd[KEYSZ + IVSZ];
 
-#ifdef WITH_OPENSSL
-	if (RAND_bytes(rnd, sizeof(rnd)) <= 0)
-		fatal("Couldn't obtain random bytes (error 0x%lx)",
-		    (unsigned long)ERR_get_error());
-#else
-	getrnd(rnd, sizeof(rnd));
-#endif
+	if (getentropy(rnd, sizeof rnd) == -1)
+		fatal("getentropy failed");
 
 	if (!rs_initialized) {
 		rs_initialized = 1;
